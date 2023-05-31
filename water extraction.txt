@@ -1,0 +1,207 @@
+  var rmL457Cloud = function(image) {
+    var qa = image.select('pixel_qa');
+    var cloud = qa.bitwiseAnd(1 << 5)
+                    .and(qa.bitwiseAnd(1 << 7))
+                    .or(qa.bitwiseAnd(1 << 3));
+    var mask2 = image.mask().reduce(ee.Reducer.min());
+    var mask3 = image.select('B1').gt(2000);
+    return image.updateMask(cloud.not()).updateMask(mask2).updateMask(mask3.not())
+                .copyProperties(image)
+                .copyProperties(image, ["system:time_start",'system:time_end','system:footprint']);
+  };
+  function rmL8Cloud(image) { 
+    var cloudShadowBitMask = (1 << 3); 
+    var cloudsBitMask = (1 << 5); 
+    var qa = image.select('pixel_qa'); 
+    var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0) 
+                   .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+    var mask2 = image.select('B1').gt(2000);
+    return image.updateMask(mask).updateMask(mask2.not())
+                .copyProperties(image)
+                .copyProperties(image, ["system:time_start",'system:time_end']);
+  } 
+  var l8_sr = ee.ImageCollection("LANDSAT/LC08/C01/T1_SR").map(rmL8Cloud)
+              .filter(ee.Filter.lte('CLOUD_COVER',10));
+              
+  var l7_sr = ee.ImageCollection("LANDSAT/LE07/C01/T1_SR").map(rmL457Cloud)
+              .filter(ee.Filter.lte('CLOUD_COVER',10));
+              
+  var l5_sr = ee.ImageCollection("LANDSAT/LT05/C01/T1_SR").map(rmL457Cloud)
+              .filter(ee.Filter.lte('CLOUD_COVER',10));
+  function calcWater(image) {
+    var NDWI = image.select("NDWI");
+    var NDVI = image.select("NDVI");
+    var EVI = image.select("EVI");
+    var water = (NDWI.gt(NDVI)
+                   .or(NDWI.gt(EVI)));
+    return image.addBands(water.rename("water"));
+  }
+  
+  
+    var Landsat57 = {
+      scaleImage: function(image) {
+      var time_start = image.get("system:time_start");
+      image = image.select(["B1","B2","B3","B4","B5","B7"]);
+      image = image.divide(10000);
+      image = image.set("system:time_start", time_start);
+      return image;
+    },
+    srCloudMask: function(image) {
+      var qa = image.select('pixel_qa');
+      var cloudShadowBitMask = (1 << 3);
+      var snowBitMask = (1 << 4);
+      var cloudsBitMask = (1 << 5);
+      var mask1 = qa.bitwiseAnd(cloudsBitMask).eq(0)
+                    .and(qa.bitwiseAnd(snowBitMask).eq(0))
+                    .and(qa.bitwiseAnd(cloudShadowBitMask).eq(0));
+      var mask2 = image.mask().reduce(ee.Reducer.min());
+      return image.updateMask(mask1.and(mask2));
+    },
+    
+    NDVI: function(image) {
+        return image.addBands(image.normalizedDifference(["B4", "B3"])
+                                   .rename("NDVI"));
+    },
+    NDWI: function(image) {
+        return image.addBands(image.normalizedDifference(["B2", "B4"])
+                                   .rename("NDWI"));
+    },
+    EVI: function(image) {
+      var evi = image.expression("EVI = 2.5 * (NIR - R) / (NIR + 6*R -7.5*B + 1)", {
+        NIR: image.select("B4"),
+        R: image.select("B3"),
+        B: image.select("B1")
+      });
+      return image.addBands(evi);
+    },
+    getL5SRCollection : function(startDate, endDate, region) {
+      var dataset = l5_sr.filterDate(startDate, endDate)
+                        .filterBounds(region)
+                        .map(Landsat57.srCloudMask)
+                        .map(Landsat57.scaleImage)
+                        .map(Landsat57.NDVI)
+                        .map(Landsat57.NDWI)
+                        .map(Landsat57.EVI)
+                        .map(calcWater)
+                        .select("water");
+      return dataset;
+    },
+    getL7SRCollection : function(startDate, endDate, region) {
+      var dataset = l7_sr.filterDate(startDate, endDate)
+                        .filterBounds(region)
+                        .map(Landsat57.srCloudMask)
+                        .map(Landsat57.scaleImage)
+                        .map(Landsat57.NDVI)
+                        .map(Landsat57.NDWI)
+                        .map(Landsat57.EVI)
+                        .map(calcWater)
+                        .select("water");
+      return dataset;
+    }
+  };
+  var Landsat8 = {
+    scaleImage: function(image) {
+      var time_start = image.get("system:time_start");
+      image = image.select(["B2","B3","B4","B5","B6","B7"]);
+      image = image.divide(10000);
+      image = image.set("system:time_start", time_start);
+      return image;
+    },
+    srCloudMask: function(image) {
+      var cloudShadowBitMask = (1 << 3);
+      var snowBitMask = (1 << 4);
+      var cloudsBitMask = (1 << 5);
+      var qa = image.select('pixel_qa');
+      var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+                   .and(qa.bitwiseAnd(snowBitMask).eq(0))
+                   .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+      return image.updateMask(mask);
+    },
+    NDVI: function(image) {
+        return image.addBands(image.normalizedDifference(["B5", "B4"])
+                                   .rename("NDVI"));
+    },
+    NDWI: function(image) {
+        return image.addBands(image.normalizedDifference(["B3", "B5"])
+                                   .rename("NDWI"));
+    },
+    EVI: function(image) {
+      var evi = image.expression("EVI = 2.5 * (NIR - R) / (NIR + 6*R -7.5*B + 1)", {
+        NIR: image.select("B5"),
+        R: image.select("B4"),
+        B: image.select("B2")
+      });
+      return image.addBands(evi);
+    },
+    getL8SRCollection : function(startDate, endDate, roi) {
+      var dataset = l8_sr.filterDate(startDate, endDate)
+                        .filterBounds(roi)
+                        .map(Landsat8.srCloudMask)
+                        .map(Landsat8.scaleImage)
+                        .map(Landsat8.NDVI)
+                        .map(Landsat8.NDWI)
+                        .map(Landsat8.EVI)
+                        .map(calcWater)
+                        .select("water");
+      return dataset;
+    }
+  };
+  function exportImageToDrive(image, key, region) {
+    Export.image.toDrive({
+      image: image, 
+      description: "Drive-"+key,
+      fileNamePrefix: key, 
+      region: region,
+      scale: 30,
+      maxPixels: 1e13
+    });
+  }
+  
+ function riverwith(image, region) {
+    var fns = require('users/eeProject/RivWidthCloudPaper:rwc_landsat.js');
+    var rwc = fns.rwGenSR('Jones2019', 4000, 333, 500, roi1);
+    var widths = rwc(image);
+    widths = widths.map(function(f) 
+    {return(f.setGeometry(null))});
+    return widths
+ }
+  function removeShadow(image, region) {
+    var uggh1 = uggh.mosaic().focal_mean(0.1).rename('elevation');
+    var hillShadowMask = uggh1.select('elevation').lte(50);
+    var waterMask = image.updateMask(hillShadowMask)
+                          .clip(region);
+    waterMask = waterMask.connectedPixelCount(40, true);
+    waterMask = waterMask.updateMask(waterMask.gte(50));
+    return image.updateMask(waterMask);
+  }
+  function processYearWaterImage(year, region) {
+  
+    var startDate = ee.Date.fromYMD(year,1, 1);
+    var endDate = ee.Date.fromYMD(year+1,1, 1); 
+  
+    var l5Water = Landsat57.getL5SRCollection(startDate, endDate, region);
+    var l7Water = Landsat57.getL7SRCollection(startDate, endDate, region);
+    var l8Water = Landsat8.getL8SRCollection(startDate, endDate, region);
+    var waterImgs = l5Water.merge(l7Water).merge(l8Water)
+    var waterImg = waterImgs.sum()
+                            .divide(waterImgs.count())
+                            .clip(region).toFloat();
+    var uggh1 = uggh.mosaic().focal_mean(0.1).rename('elevation');
+    var hillShadowMask = uggh1.select('elevation').lte(50);
+    waterImg = waterImg.updateMask(hillShadowMask);
+    
+    var ALOSDEM = ee.Image("JAXA/ALOS/AW3D30_V1_1");
+    var slope = ee.Terrain.slope(ALOSDEM.clip(roi));
+    slope=slope.lt(7);
+    waterImg=waterImg.updateMask(slope);
+    var dataset = ee.Image(DEM_30)
+                .clip(roi);
+    var terrain = ee.Algorithms.Terrain(dataset);
+    var hillshade2 = terrain.select('hillshade');
+    hillshade2=hillshade2.gte(150);
+    waterImg=waterImg.updateMask(hillshade2);
+    waterImg=waterImg.updateMask(glacier);
+    waterImg = waterImg.unmask(0).clip(region);
+    waterImg=waterImg.gte(0.25);
+    var key = "landsatWater-"+year;
+    Map.addLayer(waterImg, {min:0,max:1,palette:['#ffffff','blue']}, "water"+key, true);
